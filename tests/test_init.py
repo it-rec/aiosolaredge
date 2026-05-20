@@ -374,3 +374,100 @@ async def test_get_equipment_change_log() -> None:
             "ChangeLog": "log"
         }
         await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_accounts() -> None:
+    """Test getting accounts list."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/accounts/list?api_key=API_KEY",
+            payload={"accounts": "accounts"},
+        )
+        assert await solar_edge.get_accounts() == {"accounts": "accounts"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/accounts/list\?"
+            r"(?=.*size=5)(?=.*startIndex=10)(?=.*searchText=foo)"
+            r"(?=.*sortProperty=Name)(?=.*sortOrder=ASC).*$"
+        )
+        mocked.get(pattern, payload={"accounts": "filtered"})
+        assert await solar_edge.get_accounts(
+            size=5,
+            start_index=10,
+            search_text="foo",
+            sort_property="Name",
+            sort_order="ASC",
+        ) == {"accounts": "filtered"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_meters_data() -> None:
+    """Test getting meters data."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        start = datetime.datetime(2013, 5, 5, 11, 0, 0)
+        end = datetime.datetime(2013, 5, 5, 13, 0, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/meters\?"
+        )
+        mocked.get(pattern, payload={"meterEnergyDetails": "md"})
+        assert await solar_edge.get_meters_data(123, start, end) == {
+            "meterEnergyDetails": "md"
+        }
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/meters\?.*"
+            r"meters=PRODUCTION.*CONSUMPTION"
+        )
+        mocked.get(pattern, payload={"meterEnergyDetails": "md_filtered"})
+        assert await solar_edge.get_meters_data(
+            123, start, end, meters=["PRODUCTION", "CONSUMPTION"]
+        ) == {"meterEnergyDetails": "md_filtered"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_sensors() -> None:
+    """Test getting sensors list and data."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/equipment/123/sensors?api_key=API_KEY",
+            payload={"SiteSensors": "list"},
+        )
+        assert await solar_edge.get_sensors_list(123) == {"SiteSensors": "list"}
+
+        start = datetime.datetime(2013, 5, 5, 11, 0, 0)
+        end = datetime.datetime(2013, 5, 5, 13, 0, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/sensors\?"
+        )
+        mocked.get(pattern, payload={"siteSensors": "data"})
+        assert await solar_edge.get_sensors_data(123, start, end) == {
+            "siteSensors": "data"
+        }
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_versions() -> None:
+    """Test getting version endpoints."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/version/current?api_key=API_KEY",
+            payload={"version": "1.0.0"},
+        )
+        assert await solar_edge.get_current_version() == {"version": "1.0.0"}
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/version/supported?api_key=API_KEY",
+            payload={"supported": ["0.9.5", "1.0.0"]},
+        )
+        assert await solar_edge.get_supported_versions() == {
+            "supported": ["0.9.5", "1.0.0"]
+        }
+        await solar_edge.close()

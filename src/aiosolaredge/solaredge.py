@@ -483,6 +483,119 @@ class SolarEdge:
             self._get_equipment_url(site_id).joinpath(serial_number, "changeLog")
         )
 
+    async def get_accounts(
+        self,
+        size: int | None = None,
+        start_index: int | None = None,
+        search_text: str | None = None,
+        sort_property: str | None = None,
+        sort_order: SortOrder | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get the account and list of sub-accounts for the API key.
+
+        :param size: Maximum number of accounts to return (default 100).
+        :param start_index: First account index to be returned in the results.
+        :param search_text: Search text for accounts
+            (Name, Notes, Email, Country, State, City, Zip, Full address).
+        :param sort_property: Sorting option for the account list.
+        :param sort_order: Sort order: "ASC" or "DESC" (default "ASC").
+        :return: The accounts list.
+        """
+        params: dict[str, Any] = {}
+        if size is not None:
+            params["size"] = size
+        if start_index is not None:
+            params["startIndex"] = start_index
+        if search_text is not None:
+            params["searchText"] = search_text
+        if sort_property is not None:
+            params["sortProperty"] = sort_property
+        if sort_order is not None:
+            params["sortOrder"] = sort_order
+        return await self._get_json(
+            _BASE_URL.joinpath("accounts", "list"), params=params
+        )
+
+    async def get_meters_data(
+        self,
+        site_id: int | str,
+        start_time: datetime | str,
+        end_time: datetime | str,
+        meters: Iterable[Meter] = (),
+        time_unit: TimeUnit = "DAY",
+    ) -> dict[str, Any]:
+        """
+        Get meters data for the site.
+
+        :param site_id: The site ID.
+        :param start_time: The start time.
+        :param end_time: The end time.
+        :param meters: Optional iterable of meter types
+            (PRODUCTION, CONSUMPTION, FEEDIN, PURCHASED).
+        :param time_unit: Aggregation granularity. Default "DAY".
+        :return: Meters data.
+        """
+        params: dict[str, Any] = {
+            "startTime": _format_datetime(start_time),
+            "endTime": _format_datetime(end_time),
+            "timeUnit": time_unit,
+        }
+        if meters:
+            params["meters"] = ",".join(meters)
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("meters"), params=params
+        )
+
+    async def get_sensors_list(self, site_id: int | str) -> dict[str, Any]:
+        """
+        Get the list of sensors installed at the site.
+
+        :param site_id: The site ID.
+        :return: The sensors list.
+        """
+        return await self._get_json(
+            self._get_equipment_url(site_id).joinpath("sensors")
+        )
+
+    async def get_sensors_data(
+        self,
+        site_id: int | str,
+        start_date: datetime | str,
+        end_date: datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get the data measured by all sensors at the site.
+
+        :param site_id: The site ID.
+        :param start_date: The start date+time.
+        :param end_date: The end date+time.
+        :return: Sensor data.
+        """
+        params = {
+            "startDate": _format_datetime(start_date),
+            "endDate": _format_datetime(end_date),
+        }
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("sensors"), params=params
+        )
+
+    async def get_current_version(self) -> dict[str, Any]:
+        """
+        Get the current SolarEdge API version.
+
+        :return: The current version.
+        """
+        return await self._get_json(_BASE_URL.joinpath("version", "current"))
+
+    async def get_supported_versions(self) -> dict[str, Any]:
+        """
+        Get the list of supported SolarEdge API versions.
+
+        :return: The supported versions.
+        """
+        return await self._get_json(_BASE_URL.joinpath("version", "supported"))
+
     async def _get_json(
         self, url: yarl.URL, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
