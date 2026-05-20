@@ -329,3 +329,48 @@ async def test_bulk_endpoints_reject_empty_site_ids() -> None:
             [], "2013-06-04 11:00:00", "2013-06-04 14:00:00"
         )
     await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_components_list() -> None:
+    """Test getting components list."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/equipment/123/list?api_key=API_KEY",
+            payload={"list": "components"},
+        )
+        assert await solar_edge.get_components_list(123) == {"list": "components"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_inverter_technical_data() -> None:
+    """Test getting inverter technical data."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        start = datetime.datetime(2013, 5, 5, 11, 0, 0)
+        end = datetime.datetime(2013, 5, 5, 13, 0, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/equipment/123/12345678-90/data\?"
+        )
+        mocked.get(pattern, payload={"data": "inverter"})
+        assert await solar_edge.get_inverter_technical_data(
+            123, "12345678-90", start, end
+        ) == {"data": "inverter"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_equipment_change_log() -> None:
+    """Test getting equipment change log."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/equipment/123/12345678-90/changeLog?api_key=API_KEY",
+            payload={"ChangeLog": "log"},
+        )
+        assert await solar_edge.get_equipment_change_log(123, "12345678-90") == {
+            "ChangeLog": "log"
+        }
+        await solar_edge.close()

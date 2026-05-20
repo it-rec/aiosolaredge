@@ -77,6 +77,10 @@ class SolarEdge:
         """Get the bulk sites URL."""
         return _BASE_URL.joinpath("sites", _join_ids(site_ids))
 
+    def _get_equipment_url(self, site_id: int | str) -> yarl.URL:
+        """Get the equipment URL."""
+        return _BASE_URL.joinpath("equipment", str(site_id))
+
     async def get_details(self, site_id: int | str) -> dict[str, Any]:
         """
         Get details of the SolarEdge system.
@@ -428,6 +432,55 @@ class SolarEdge:
             params["systemUnits"] = system_units
         return await self._get_json(
             self._get_site_url(site_id).joinpath("envBenefits"), params=params
+        )
+
+    async def get_components_list(self, site_id: int | str) -> dict[str, Any]:
+        """
+        Get the list of inverters/SMIs in the site.
+
+        :param site_id: The site ID.
+        :return: The components list.
+        """
+        return await self._get_json(self._get_equipment_url(site_id).joinpath("list"))
+
+    async def get_inverter_technical_data(
+        self,
+        site_id: int | str,
+        serial_number: str,
+        start_time: datetime | str,
+        end_time: datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get technical data for a specific inverter.
+
+        :param site_id: The site ID.
+        :param serial_number: The inverter short serial number.
+        :param start_time: The start time.
+        :param end_time: The end time.
+        :return: Inverter technical data.
+        """
+        params = {
+            "startTime": _format_datetime(start_time),
+            "endTime": _format_datetime(end_time),
+        }
+        return await self._get_json(
+            self._get_equipment_url(site_id).joinpath(serial_number, "data"),
+            params=params,
+        )
+
+    async def get_equipment_change_log(
+        self, site_id: int | str, serial_number: str
+    ) -> dict[str, Any]:
+        """
+        Get the equipment change log for a component.
+
+        :param site_id: The site ID.
+        :param serial_number: Inverter, battery, optimizer or gateway short
+            serial number.
+        :return: Equipment change log.
+        """
+        return await self._get_json(
+            self._get_equipment_url(site_id).joinpath(serial_number, "changeLog")
         )
 
     async def _get_json(
