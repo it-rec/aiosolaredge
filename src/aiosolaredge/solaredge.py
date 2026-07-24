@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Iterable, Literal
 
 import aiohttp
@@ -9,8 +10,66 @@ import yarl
 
 _BASE_URL = yarl.URL("https://monitoringapi.solaredge.com")
 _DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+_DATE_FORMAT = "%Y-%m-%d"
+_DEFAULT_IMAGE_CONTENT_TYPE = "image/jpeg"
 
 _LOGGER = logging.getLogger(__name__)
+
+Meter = Literal["PRODUCTION", "CONSUMPTION", "SELFCONSUMPTION", "FEEDIN", "PURCHASED"]
+TimeUnit = Literal["QUARTER_OF_AN_HOUR", "HOUR", "DAY", "WEEK", "MONTH", "YEAR"]
+SystemUnits = Literal["Metrics", "Imperial"]
+SortOrder = Literal["ASC", "DESC"]
+
+
+@dataclass(frozen=True)
+class SolarEdgeImage:
+    """
+    An image returned by the SolarEdge API.
+
+    :param content: The raw image bytes, suitable for serving directly to a
+        Home Assistant Image entity (e.g. via ``async_image()``).
+    :param content_type: The MIME type reported by the server,
+        e.g. ``"image/jpeg"`` or ``"image/png"``. Use this for the
+        Home Assistant Image entity ``content_type`` property.
+    :param hash: Server-side hash of the image, if provided. Pass it back on
+        a subsequent request via the ``hash`` parameter to allow the server
+        to short-circuit with HTTP 304 (returned as ``None`` from the
+        client) when the image has not changed.
+    """
+
+    content: bytes
+    content_type: str
+    hash: str | None = None
+
+
+def _format_date(value: date | datetime | str) -> str:
+    """Format a date value for the SolarEdge API (YYYY-MM-DD)."""
+    if isinstance(value, str):
+        return value
+    return value.strftime(_DATE_FORMAT)
+
+
+def _format_datetime(value: datetime | str) -> str:
+    """Format a datetime value for the SolarEdge API (YYYY-MM-DD hh:mm:ss)."""
+    if isinstance(value, str):
+        return value
+    return value.strftime(_DATETIME_FORMAT)
+
+
+def _join_ids(site_ids: Iterable[int | str]) -> str:
+    """
+    Join site IDs with a comma for bulk API calls.
+
+    :param site_ids: An iterable of site IDs.
+    :return: The comma separated site IDs.
+    :raises ValueError: If ``site_ids`` is empty. Joining nothing would build
+        an invalid bulk URL such as ``/sites//energy``, so fail fast with a
+        clear error rather than letting the server reject it.
+    """
+    joined = ",".join(str(site_id) for site_id in site_ids)
+    if not joined:
+        raise ValueError("site_ids must contain at least one site ID")
+    return joined
 
 
 class SolarEdge:
@@ -36,6 +95,14 @@ class SolarEdge:
     def _get_site_url(self, site_id: int | str) -> yarl.URL:
         """Get the site URL."""
         return _BASE_URL.joinpath("site", str(site_id))
+
+    def _get_sites_url(self, site_ids: Iterable[int | str]) -> yarl.URL:
+        """Get the bulk sites URL."""
+        return _BASE_URL.joinpath("sites", _join_ids(site_ids))
+
+    def _get_equipment_url(self, site_id: int | str) -> yarl.URL:
+        """Get the equipment URL."""
+        return _BASE_URL.joinpath("equipment", str(site_id))
 
     async def get_details(self, site_id: int | str) -> dict[str, Any]:
         """
@@ -69,12 +136,8 @@ class SolarEdge:
         site_id: int | str,
         start_time: datetime,
         end_time: datetime,
-        meters: Iterable[
-            Literal[
-                "PRODUCTION", "CONSUMPTION", "SELFCONSUMPTION", "FEEDIN", "PURCHASED"
-            ]
-        ] = [],
-        time_unit: str = "DAY",
+        meters: Iterable[Meter] = (),
+        time_unit: TimeUnit = "DAY",
     ) -> dict[str, Any]:
         """
         Get energy details of the SolarEdge system.
@@ -137,6 +200,491 @@ class SolarEdge:
             self._get_site_url(site_id).joinpath("currentPowerFlow")
         )
 
+    async def get_sites(
+        self,
+        size: int | None = None,
+        start_index: int | None = None,
+        search_text: str | None = None,
+        sort_property: str | None = None,
+        sort_order: SortOrder | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get the list of sites for the given account API key.
+
+        :param size: Maximum number of sites to return (default 100, max 100).
+        :param start_index: First site index to be returned in the results.
+        :param search_text: Search text for sites
+            (Name, Notes, Address, City, Zip, Full address, Country).
+        :param sort_property: Sorting option for the site list (e.g. "Name",
+            "Country", "Status", "PeakPower", "InstallationDate", etc.).
+        :param sort_order: Sort order: "ASC" or "DESC" (default "ASC").
+        :param status: Filter sites by status. A comma-separated combination
+            of "Active", "Pending", "Disabled" or "All".
+        :return: The list of sites.
+        """
+        params: dict[str, Any] = {}
+        if size is not None:
+            params["size"] = size
+        if start_index is not None:
+            params["startIndex"] = start_index
+        if search_text is not None:
+            params["searchText"] = search_text
+        if sort_property is not None:
+            params["sortProperty"] = sort_property
+        if sort_order is not None:
+            params["sortOrder"] = sort_order
+        if status is not None:
+            params["status"] = status
+        return await self._get_json(_BASE_URL.joinpath("sites", "list"), params=params)
+
+    async def get_data_period(self, site_id: int | str) -> dict[str, Any]:
+        """
+        Get the energy production start and end dates for the site.
+
+        :param site_id: The site ID.
+        :return: The data period.
+        """
+        return await self._get_json(self._get_site_url(site_id).joinpath("dataPeriod"))
+
+    async def get_data_period_bulk(
+        self, site_ids: Iterable[int | str]
+    ) -> dict[str, Any]:
+        """
+        Get the energy production start and end dates for multiple sites.
+
+        :param site_ids: An iterable of site IDs (up to 100).
+        :return: The data period for each site.
+        """
+        return await self._get_json(
+            self._get_sites_url(site_ids).joinpath("dataPeriod")
+        )
+
+    async def get_energy(
+        self,
+        site_id: int | str,
+        start_date: date | datetime | str,
+        end_date: date | datetime | str,
+        time_unit: TimeUnit = "DAY",
+    ) -> dict[str, Any]:
+        """
+        Get site energy measurements.
+
+        :param site_id: The site ID.
+        :param start_date: The start date.
+        :param end_date: The end date.
+        :param time_unit: Aggregation granularity. Default "DAY".
+            Allowed values: "QUARTER_OF_AN_HOUR", "HOUR", "DAY",
+            "WEEK", "MONTH", "YEAR".
+        :return: Site energy measurements.
+        """
+        params = {
+            "startDate": _format_date(start_date),
+            "endDate": _format_date(end_date),
+            "timeUnit": time_unit,
+        }
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("energy"), params=params
+        )
+
+    async def get_energy_bulk(
+        self,
+        site_ids: Iterable[int | str],
+        start_date: date | datetime | str,
+        end_date: date | datetime | str,
+        time_unit: TimeUnit = "DAY",
+    ) -> dict[str, Any]:
+        """
+        Get site energy measurements for multiple sites.
+
+        :param site_ids: An iterable of site IDs (up to 100).
+        :param start_date: The start date.
+        :param end_date: The end date.
+        :param time_unit: Aggregation granularity. Default "DAY".
+        :return: Site energy measurements per site.
+        """
+        params = {
+            "startDate": _format_date(start_date),
+            "endDate": _format_date(end_date),
+            "timeUnit": time_unit,
+        }
+        return await self._get_json(
+            self._get_sites_url(site_ids).joinpath("energy"), params=params
+        )
+
+    async def get_time_frame_energy(
+        self,
+        site_id: int | str,
+        start_date: date | datetime | str,
+        end_date: date | datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get the site total energy produced for a given time period.
+
+        :param site_id: The site ID.
+        :param start_date: The start date.
+        :param end_date: The end date.
+        :return: The total energy for the period.
+        """
+        params = {
+            "startDate": _format_date(start_date),
+            "endDate": _format_date(end_date),
+        }
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("timeFrameEnergy"),
+            params=params,
+        )
+
+    async def get_time_frame_energy_bulk(
+        self,
+        site_ids: Iterable[int | str],
+        start_date: date | datetime | str,
+        end_date: date | datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get the total energy produced for a given time period for multiple sites.
+
+        :param site_ids: An iterable of site IDs (up to 100).
+        :param start_date: The start date.
+        :param end_date: The end date.
+        :return: The total energy per site.
+        """
+        params = {
+            "startDate": _format_date(start_date),
+            "endDate": _format_date(end_date),
+        }
+        return await self._get_json(
+            self._get_sites_url(site_ids).joinpath("timeFrameEnergy"),
+            params=params,
+        )
+
+    async def get_power(
+        self,
+        site_id: int | str,
+        start_time: datetime | str,
+        end_time: datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get site power measurements at 15-minute resolution.
+
+        :param site_id: The site ID.
+        :param start_time: The start time.
+        :param end_time: The end time.
+        :return: Site power measurements.
+        """
+        params = {
+            "startTime": _format_datetime(start_time),
+            "endTime": _format_datetime(end_time),
+        }
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("power"), params=params
+        )
+
+    async def get_power_bulk(
+        self,
+        site_ids: Iterable[int | str],
+        start_time: datetime | str,
+        end_time: datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get power measurements at 15-minute resolution for multiple sites.
+
+        :param site_ids: An iterable of site IDs (up to 100).
+        :param start_time: The start time.
+        :param end_time: The end time.
+        :return: Site power measurements per site.
+        """
+        params = {
+            "startTime": _format_datetime(start_time),
+            "endTime": _format_datetime(end_time),
+        }
+        return await self._get_json(
+            self._get_sites_url(site_ids).joinpath("power"), params=params
+        )
+
+    async def get_overview_bulk(self, site_ids: Iterable[int | str]) -> dict[str, Any]:
+        """
+        Get overview data for multiple sites.
+
+        :param site_ids: An iterable of site IDs (up to 100).
+        :return: The overview per site.
+        """
+        return await self._get_json(self._get_sites_url(site_ids).joinpath("overview"))
+
+    async def get_power_details(
+        self,
+        site_id: int | str,
+        start_time: datetime | str,
+        end_time: datetime | str,
+        meters: Iterable[Meter] = (),
+    ) -> dict[str, Any]:
+        """
+        Get detailed site power measurements from meters.
+
+        :param site_id: The site ID.
+        :param start_time: The start time.
+        :param end_time: The end time.
+        :param meters: Optional iterable of meter types
+            (PRODUCTION, CONSUMPTION, SELFCONSUMPTION, FEEDIN, PURCHASED).
+        :return: Detailed site power measurements.
+        """
+        params: dict[str, Any] = {
+            "startTime": _format_datetime(start_time),
+            "endTime": _format_datetime(end_time),
+        }
+        if meters:
+            params["meters"] = ",".join(meters)
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("powerDetails"), params=params
+        )
+
+    async def get_environmental_benefits(
+        self,
+        site_id: int | str,
+        system_units: SystemUnits | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get environmental benefits based on site energy production.
+
+        :param site_id: The site ID.
+        :param system_units: Optional unit system: "Metrics" or "Imperial".
+        :return: Environmental benefits (CO2 saved, trees planted, etc.).
+        """
+        params: dict[str, Any] = {}
+        if system_units is not None:
+            params["systemUnits"] = system_units
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("envBenefits"), params=params
+        )
+
+    async def get_components_list(self, site_id: int | str) -> dict[str, Any]:
+        """
+        Get the list of inverters/SMIs in the site.
+
+        :param site_id: The site ID.
+        :return: The components list.
+        """
+        return await self._get_json(self._get_equipment_url(site_id).joinpath("list"))
+
+    async def get_inverter_technical_data(
+        self,
+        site_id: int | str,
+        serial_number: str,
+        start_time: datetime | str,
+        end_time: datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get technical data for a specific inverter.
+
+        :param site_id: The site ID.
+        :param serial_number: The inverter short serial number.
+        :param start_time: The start time.
+        :param end_time: The end time.
+        :return: Inverter technical data.
+        """
+        params = {
+            "startTime": _format_datetime(start_time),
+            "endTime": _format_datetime(end_time),
+        }
+        return await self._get_json(
+            self._get_equipment_url(site_id).joinpath(serial_number, "data"),
+            params=params,
+        )
+
+    async def get_equipment_change_log(
+        self, site_id: int | str, serial_number: str
+    ) -> dict[str, Any]:
+        """
+        Get the equipment change log for a component.
+
+        :param site_id: The site ID.
+        :param serial_number: Inverter, battery, optimizer or gateway short
+            serial number.
+        :return: Equipment change log.
+        """
+        return await self._get_json(
+            self._get_equipment_url(site_id).joinpath(serial_number, "changeLog")
+        )
+
+    async def get_accounts(
+        self,
+        size: int | None = None,
+        start_index: int | None = None,
+        search_text: str | None = None,
+        sort_property: str | None = None,
+        sort_order: SortOrder | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get the account and list of sub-accounts for the API key.
+
+        :param size: Maximum number of accounts to return (default 100).
+        :param start_index: First account index to be returned in the results.
+        :param search_text: Search text for accounts
+            (Name, Notes, Email, Country, State, City, Zip, Full address).
+        :param sort_property: Sorting option for the account list.
+        :param sort_order: Sort order: "ASC" or "DESC" (default "ASC").
+        :return: The accounts list.
+        """
+        params: dict[str, Any] = {}
+        if size is not None:
+            params["size"] = size
+        if start_index is not None:
+            params["startIndex"] = start_index
+        if search_text is not None:
+            params["searchText"] = search_text
+        if sort_property is not None:
+            params["sortProperty"] = sort_property
+        if sort_order is not None:
+            params["sortOrder"] = sort_order
+        return await self._get_json(
+            _BASE_URL.joinpath("accounts", "list"), params=params
+        )
+
+    async def get_meters_data(
+        self,
+        site_id: int | str,
+        start_time: datetime | str,
+        end_time: datetime | str,
+        meters: Iterable[Meter] = (),
+        time_unit: TimeUnit = "DAY",
+    ) -> dict[str, Any]:
+        """
+        Get meters data for the site.
+
+        :param site_id: The site ID.
+        :param start_time: The start time.
+        :param end_time: The end time.
+        :param meters: Optional iterable of meter types
+            (PRODUCTION, CONSUMPTION, FEEDIN, PURCHASED).
+        :param time_unit: Aggregation granularity. Default "DAY".
+        :return: Meters data.
+        """
+        params: dict[str, Any] = {
+            "startTime": _format_datetime(start_time),
+            "endTime": _format_datetime(end_time),
+            "timeUnit": time_unit,
+        }
+        if meters:
+            params["meters"] = ",".join(meters)
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("meters"), params=params
+        )
+
+    async def get_sensors_list(self, site_id: int | str) -> dict[str, Any]:
+        """
+        Get the list of sensors installed at the site.
+
+        :param site_id: The site ID.
+        :return: The sensors list.
+        """
+        return await self._get_json(
+            self._get_equipment_url(site_id).joinpath("sensors")
+        )
+
+    async def get_sensors_data(
+        self,
+        site_id: int | str,
+        start_date: datetime | str,
+        end_date: datetime | str,
+    ) -> dict[str, Any]:
+        """
+        Get the data measured by all sensors at the site.
+
+        :param site_id: The site ID.
+        :param start_date: The start date+time.
+        :param end_date: The end date+time.
+        :return: Sensor data.
+        """
+        params = {
+            "startDate": _format_datetime(start_date),
+            "endDate": _format_datetime(end_date),
+        }
+        return await self._get_json(
+            self._get_site_url(site_id).joinpath("sensors"), params=params
+        )
+
+    async def get_current_version(self) -> dict[str, Any]:
+        """
+        Get the current SolarEdge API version.
+
+        :return: The current version.
+        """
+        return await self._get_json(_BASE_URL.joinpath("version", "current"))
+
+    async def get_supported_versions(self) -> dict[str, Any]:
+        """
+        Get the list of supported SolarEdge API versions.
+
+        :return: The supported versions.
+        """
+        return await self._get_json(_BASE_URL.joinpath("version", "supported"))
+
+    async def get_site_image(
+        self,
+        site_id: int | str,
+        name: str | None = None,
+        max_width: int | None = None,
+        max_height: int | None = None,
+        hash: str | int | None = None,
+    ) -> SolarEdgeImage | None:
+        """
+        Get the site image as uploaded to the SolarEdge monitoring portal.
+
+        Use this to feed a Home Assistant Image entity: return
+        ``image.content`` from ``async_image()`` and ``image.content_type``
+        from the ``content_type`` property.
+
+        :param site_id: The site ID.
+        :param name: Optional file name to suggest to the caller / browser.
+            When omitted the original uploaded image is returned.
+        :param max_width: Optional maximum width to scale the image to.
+            Aspect ratio is preserved by the server.
+        :param max_height: Optional maximum height to scale the image to.
+            Aspect ratio is preserved by the server.
+        :param hash: Optional previously-returned image hash. If the image
+            has not changed the server replies with HTTP 304 and this method
+            returns ``None`` (use this to skip re-downloading unchanged
+            images). Ignored by the server when ``max_width``/``max_height``
+            are set.
+        :return: A :class:`SolarEdgeImage` with the image bytes and content
+            type, or ``None`` when the image is unchanged (HTTP 304) or the
+            site has no image (HTTP 404).
+        """
+        url = self._get_site_url(site_id).joinpath("siteImage")
+        if name is not None:
+            url = url.joinpath(name)
+        params: dict[str, Any] = {}
+        if max_width is not None:
+            params["maxWidth"] = max_width
+        if max_height is not None:
+            params["maxHeight"] = max_height
+        if hash is not None:
+            params["hash"] = hash
+        return await self._get_image(url, params=params)
+
+    async def get_installer_image(
+        self,
+        site_id: int | str,
+        name: str | None = None,
+    ) -> SolarEdgeImage | None:
+        """
+        Get the installer logo image for the site.
+
+        Falls back to the account installer logo if the site does not have
+        its own. Use this with a Home Assistant Image entity the same way
+        as :meth:`get_site_image`.
+
+        :param site_id: The site ID.
+        :param name: Optional file name to suggest to the caller / browser.
+        :return: A :class:`SolarEdgeImage` with the image bytes and content
+            type, or ``None`` if no installer logo is available
+            (HTTP 404).
+        """
+        url = self._get_site_url(site_id).joinpath("installerImage")
+        if name is not None:
+            url = url.joinpath(name)
+        return await self._get_image(url)
+
     async def _get_json(
         self, url: yarl.URL, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -152,3 +700,32 @@ class SolarEdge:
         json = await response.json()
         _LOGGER.debug("JSON from %s: %s", url, json)
         return json
+
+    async def _get_image(
+        self, url: yarl.URL, params: dict[str, Any] | None = None
+    ) -> SolarEdgeImage | None:
+        """
+        Get an image from the SolarEdge API.
+
+        Returns ``None`` for HTTP 304 (image unchanged, see the ``hash``
+        parameter on the public methods) and HTTP 404 (no image
+        available). Raises for any other non-2xx status.
+        """
+        _LOGGER.debug("Calling %s with params: %s", url, params)
+        response = await self.session.get(
+            url,
+            params={"api_key": self.api_key, **(params or {})},
+            timeout=self.timeout,
+        )
+        _LOGGER.debug("Response from %s: %s", url, response.status)
+        if response.status in (304, 404):
+            await response.release()
+            return None
+        response.raise_for_status()
+        content = await response.read()
+        content_type = response.headers.get("Content-Type", _DEFAULT_IMAGE_CONTENT_TYPE)
+        return SolarEdgeImage(
+            content=content,
+            content_type=content_type,
+            hash=response.headers.get("ETag") or response.headers.get("Hash"),
+        )

@@ -3,9 +3,9 @@ import re
 
 import aiohttp
 import pytest
-from aioresponses import aioresponses
+from aiointercept import aiointercept
 
-from aiosolaredge import SolarEdge
+from aiosolaredge import SolarEdge, SolarEdgeImage
 
 
 @pytest.mark.asyncio
@@ -33,7 +33,7 @@ async def test_create_object_passed_session():
 @pytest.mark.asyncio
 async def test_simple_requests() -> None:
     """Creating an object works as expected."""
-    with aioresponses() as mocked:
+    async with aiointercept(mock_external_urls=True) as mocked:
         solar_edge = SolarEdge("API_KEY")
         assert solar_edge.timeout == 10
         assert solar_edge.api_key == "API_KEY"
@@ -109,4 +109,455 @@ async def test_simple_requests() -> None:
             datetime.datetime.now(),
             serials=["SN1", "SN2"],
         ) == {"storageData": {"batteryCount": 1, "batteries": []}}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_sites() -> None:
+    """Test getting the list of sites with all options."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/sites/list?api_key=API_KEY",
+            payload={"sites": "sites"},
+        )
+        assert await solar_edge.get_sites() == {"sites": "sites"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/sites/list\?"
+            r"(?=.*api_key=API_KEY)(?=.*size=5)(?=.*startIndex=10)(?=.*searchText=Lyon)"
+            r"(?=.*sortProperty=Name)(?=.*sortOrder=DESC)(?=.*status=Active).*$"
+        )
+        mocked.get(pattern, payload={"sites": "filtered"})
+        assert await solar_edge.get_sites(
+            size=5,
+            start_index=10,
+            search_text="Lyon",
+            sort_property="Name",
+            sort_order="DESC",
+            status="Active",
+        ) == {"sites": "filtered"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_data_period() -> None:
+    """Test getting data period for a single site and bulk."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/dataPeriod?api_key=API_KEY",
+            payload={"dataPeriod": "dataPeriod"},
+        )
+        assert await solar_edge.get_data_period(123) == {"dataPeriod": "dataPeriod"}
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/sites/1,4/dataPeriod?api_key=API_KEY",
+            payload={"dataPeriod": "bulk"},
+        )
+        assert await solar_edge.get_data_period_bulk([1, 4]) == {"dataPeriod": "bulk"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_energy() -> None:
+    """Test getting energy and bulk energy."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/energy\?"
+            r"(?=.*startDate=2013-05-01)(?=.*endDate=2013-05-30)(?=.*timeUnit=DAY).*$"
+        )
+        mocked.get(pattern, payload={"energy": "energy"})
+        assert await solar_edge.get_energy(
+            123,
+            datetime.date(2013, 5, 1),
+            datetime.date(2013, 5, 30),
+        ) == {"energy": "energy"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/energy\?"
+            r"(?=.*startDate=2013-05-01)(?=.*endDate=2013-05-30)(?=.*timeUnit=HOUR).*$"
+        )
+        mocked.get(pattern, payload={"energy": "energy_str"})
+        assert await solar_edge.get_energy(
+            123, "2013-05-01", "2013-05-30", time_unit="HOUR"
+        ) == {"energy": "energy_str"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/sites/1,4/energy\?"
+            r"(?=.*startDate=2013-05-01)(?=.*endDate=2013-05-30)(?=.*timeUnit=DAY).*$"
+        )
+        mocked.get(pattern, payload={"energy": "bulk"})
+        assert await solar_edge.get_energy_bulk(
+            [1, 4],
+            datetime.date(2013, 5, 1),
+            datetime.date(2013, 5, 30),
+        ) == {"energy": "bulk"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_time_frame_energy() -> None:
+    """Test getting time frame energy and bulk."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/timeFrameEnergy\?"
+            r"(?=.*startDate=2013-05-01)(?=.*endDate=2013-05-06).*$"
+        )
+        mocked.get(pattern, payload={"timeFrameEnergy": "tfe"})
+        assert await solar_edge.get_time_frame_energy(
+            123,
+            datetime.date(2013, 5, 1),
+            datetime.date(2013, 5, 6),
+        ) == {"timeFrameEnergy": "tfe"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/sites/1,4/timeFrameEnergy\?"
+            r"(?=.*startDate=2013-05-01)(?=.*endDate=2013-05-06).*$"
+        )
+        mocked.get(pattern, payload={"timeFrameEnergy": "bulk"})
+        assert await solar_edge.get_time_frame_energy_bulk(
+            [1, 4], "2013-05-01", "2013-05-06"
+        ) == {"timeFrameEnergy": "bulk"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power() -> None:
+    """Test getting power and bulk power."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        start = datetime.datetime(2013, 6, 4, 11, 0, 0)
+        end = datetime.datetime(2013, 6, 4, 14, 0, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/power\?"
+            r"(?=.*startTime=2013-06-04)(?=.*endTime=2013-06-04).*$"
+        )
+        mocked.get(pattern, payload={"power": "power"})
+        assert await solar_edge.get_power(123, start, end) == {"power": "power"}
+
+        mocked.get(pattern, payload={"power": "power_str"})
+        assert await solar_edge.get_power(
+            123, "2013-06-04 11:00:00", "2013-06-04 14:00:00"
+        ) == {"power": "power_str"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/sites/1,4/power\?"
+        )
+        mocked.get(pattern, payload={"power": "bulk"})
+        assert await solar_edge.get_power_bulk([1, 4], start, end) == {"power": "bulk"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_overview_bulk() -> None:
+    """Test getting bulk overview."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/sites/1,4/overview?api_key=API_KEY",
+            payload={"overview": "bulk"},
+        )
+        assert await solar_edge.get_overview_bulk([1, 4]) == {"overview": "bulk"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_power_details() -> None:
+    """Test getting power details."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        start = datetime.datetime(2015, 11, 21, 11, 0, 0)
+        end = datetime.datetime(2015, 11, 21, 11, 30, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/powerDetails\?"
+        )
+        mocked.get(pattern, payload={"powerDetails": "pd"})
+        assert await solar_edge.get_power_details(123, start, end) == {
+            "powerDetails": "pd"
+        }
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/powerDetails\?.*"
+            r"meters=PRODUCTION.*CONSUMPTION"
+        )
+        mocked.get(pattern, payload={"powerDetails": "pd_meters"})
+        assert await solar_edge.get_power_details(
+            123, start, end, meters=["PRODUCTION", "CONSUMPTION"]
+        ) == {"powerDetails": "pd_meters"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_environmental_benefits() -> None:
+    """Test getting environmental benefits."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/envBenefits?api_key=API_KEY",
+            payload={"envBenefits": "eb"},
+        )
+        assert await solar_edge.get_environmental_benefits(123) == {"envBenefits": "eb"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/envBenefits\?.*"
+            r"systemUnits=Imperial"
+        )
+        mocked.get(pattern, payload={"envBenefits": "imperial"})
+        assert await solar_edge.get_environmental_benefits(
+            123, system_units="Imperial"
+        ) == {"envBenefits": "imperial"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_bulk_endpoints_reject_empty_site_ids() -> None:
+    """Bulk endpoints fail fast rather than building an invalid /sites// URL."""
+    solar_edge = SolarEdge("API_KEY")
+    with pytest.raises(ValueError, match="at least one site ID"):
+        await solar_edge.get_data_period_bulk([])
+    with pytest.raises(ValueError, match="at least one site ID"):
+        await solar_edge.get_overview_bulk([])
+    with pytest.raises(ValueError, match="at least one site ID"):
+        await solar_edge.get_energy_bulk([], "2013-05-01", "2013-05-30")
+    with pytest.raises(ValueError, match="at least one site ID"):
+        await solar_edge.get_time_frame_energy_bulk([], "2013-05-01", "2013-05-06")
+    with pytest.raises(ValueError, match="at least one site ID"):
+        await solar_edge.get_power_bulk(
+            [], "2013-06-04 11:00:00", "2013-06-04 14:00:00"
+        )
+    await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_components_list() -> None:
+    """Test getting components list."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/equipment/123/list?api_key=API_KEY",
+            payload={"list": "components"},
+        )
+        assert await solar_edge.get_components_list(123) == {"list": "components"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_inverter_technical_data() -> None:
+    """Test getting inverter technical data."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        start = datetime.datetime(2013, 5, 5, 11, 0, 0)
+        end = datetime.datetime(2013, 5, 5, 13, 0, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/equipment/123/12345678-90/data\?"
+        )
+        mocked.get(pattern, payload={"data": "inverter"})
+        assert await solar_edge.get_inverter_technical_data(
+            123, "12345678-90", start, end
+        ) == {"data": "inverter"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_equipment_change_log() -> None:
+    """Test getting equipment change log."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/equipment/123/12345678-90/changeLog?api_key=API_KEY",
+            payload={"ChangeLog": "log"},
+        )
+        assert await solar_edge.get_equipment_change_log(123, "12345678-90") == {
+            "ChangeLog": "log"
+        }
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_accounts() -> None:
+    """Test getting accounts list."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/accounts/list?api_key=API_KEY",
+            payload={"accounts": "accounts"},
+        )
+        assert await solar_edge.get_accounts() == {"accounts": "accounts"}
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/accounts/list\?"
+            r"(?=.*size=5)(?=.*startIndex=10)(?=.*searchText=foo)"
+            r"(?=.*sortProperty=Name)(?=.*sortOrder=ASC).*$"
+        )
+        mocked.get(pattern, payload={"accounts": "filtered"})
+        assert await solar_edge.get_accounts(
+            size=5,
+            start_index=10,
+            search_text="foo",
+            sort_property="Name",
+            sort_order="ASC",
+        ) == {"accounts": "filtered"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_meters_data() -> None:
+    """Test getting meters data."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        start = datetime.datetime(2013, 5, 5, 11, 0, 0)
+        end = datetime.datetime(2013, 5, 5, 13, 0, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/meters\?"
+        )
+        mocked.get(pattern, payload={"meterEnergyDetails": "md"})
+        assert await solar_edge.get_meters_data(123, start, end) == {
+            "meterEnergyDetails": "md"
+        }
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/meters\?.*"
+            r"meters=PRODUCTION.*CONSUMPTION"
+        )
+        mocked.get(pattern, payload={"meterEnergyDetails": "md_filtered"})
+        assert await solar_edge.get_meters_data(
+            123, start, end, meters=["PRODUCTION", "CONSUMPTION"]
+        ) == {"meterEnergyDetails": "md_filtered"}
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_sensors() -> None:
+    """Test getting sensors list and data."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/equipment/123/sensors?api_key=API_KEY",
+            payload={"SiteSensors": "list"},
+        )
+        assert await solar_edge.get_sensors_list(123) == {"SiteSensors": "list"}
+
+        start = datetime.datetime(2013, 5, 5, 11, 0, 0)
+        end = datetime.datetime(2013, 5, 5, 13, 0, 0)
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/sensors\?"
+        )
+        mocked.get(pattern, payload={"siteSensors": "data"})
+        assert await solar_edge.get_sensors_data(123, start, end) == {
+            "siteSensors": "data"
+        }
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_versions() -> None:
+    """Test getting version endpoints."""
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+        mocked.get(
+            "https://monitoringapi.solaredge.com/version/current?api_key=API_KEY",
+            payload={"version": "1.0.0"},
+        )
+        assert await solar_edge.get_current_version() == {"version": "1.0.0"}
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/version/supported?api_key=API_KEY",
+            payload={"supported": ["0.9.5", "1.0.0"]},
+        )
+        assert await solar_edge.get_supported_versions() == {
+            "supported": ["0.9.5", "1.0.0"]
+        }
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_site_image() -> None:
+    """Test fetching the site image, including 304/404 handling."""
+    png_bytes = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/siteImage?api_key=API_KEY",
+            status=200,
+            body=png_bytes,
+            headers={"Content-Type": "image/png", "ETag": "abc123"},
+        )
+        result = await solar_edge.get_site_image(123)
+        assert isinstance(result, SolarEdgeImage)
+        assert result.content == png_bytes
+        assert result.content_type == "image/png"
+        assert result.hash == "abc123"
+
+        pattern = re.compile(
+            r"^https://monitoringapi\.solaredge\.com/site/123/siteImage/myimage\.jpg\?"
+            r"(?=.*hash=abc123)(?=.*maxWidth=300)(?=.*maxHeight=200).*$"
+        )
+        mocked.get(
+            pattern,
+            status=200,
+            body=png_bytes,
+            headers={"Content-Type": "image/jpeg"},
+        )
+        result = await solar_edge.get_site_image(
+            123,
+            name="myimage.jpg",
+            max_width=300,
+            max_height=200,
+            hash="abc123",
+        )
+        assert isinstance(result, SolarEdgeImage)
+        assert result.content_type == "image/jpeg"
+        assert result.hash is None
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/siteImage?api_key=API_KEY",
+            status=304,
+        )
+        assert await solar_edge.get_site_image(123) is None
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/siteImage?api_key=API_KEY",
+            status=404,
+        )
+        assert await solar_edge.get_site_image(123) is None
+        await solar_edge.close()
+
+
+@pytest.mark.asyncio
+async def test_get_installer_image() -> None:
+    """Test fetching the installer logo image."""
+    jpg_bytes = b"\xff\xd8\xff\xe0fake-jpeg"
+    async with aiointercept(mock_external_urls=True) as mocked:
+        solar_edge = SolarEdge("API_KEY")
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/installerImage?api_key=API_KEY",
+            status=200,
+            body=jpg_bytes,
+            headers={"Content-Type": "image/jpeg"},
+        )
+        result = await solar_edge.get_installer_image(123)
+        assert isinstance(result, SolarEdgeImage)
+        assert result.content == jpg_bytes
+        assert result.content_type == "image/jpeg"
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/installerImage/logo.png?api_key=API_KEY",
+            status=200,
+            body=jpg_bytes,
+            headers={"Content-Type": "image/png"},
+        )
+        result = await solar_edge.get_installer_image(123, name="logo.png")
+        assert isinstance(result, SolarEdgeImage)
+        assert result.content_type == "image/png"
+
+        mocked.get(
+            "https://monitoringapi.solaredge.com/site/123/installerImage?api_key=API_KEY",
+            status=404,
+        )
+        assert await solar_edge.get_installer_image(123) is None
         await solar_edge.close()
